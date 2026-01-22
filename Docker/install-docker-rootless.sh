@@ -113,4 +113,5 @@ if [ "$(loginctl show-user $USERNAME -p Linger | cut -d= -f2)" != "yes" ]; then
 fi
 
 echo -e "${GREEN}### Installation fertig! ###${NC}"
+echo -e "docker.sock Path: /run/user/$USER_ID/docker.sock"
 echo -e "Bitte ausführen: ${GREEN}source ~/.bashrc${NC}"
