@@ -1,3 +1,5 @@
+USERNAME=$(whoami)
+
 # Add Docker's official GPG key:
 sudo apt-get update
 sudo apt-get install ca-certificates curl
@@ -14,4 +16,4 @@ echo \
 # Install Docker
 sudo apt-get update
 sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
-sudo usermod -aG docker kvn
+sudo usermod -aG docker $USERNAME
