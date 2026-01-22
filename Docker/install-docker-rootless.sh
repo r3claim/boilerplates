@@ -1,163 +1,116 @@
-#!/usr/bin/env bash
-# install-docker-rootless.sh
-# Run as root.
-set -euo pipefail
+#!/bin/bash
 
-USER_NAME="dockeruser"
-SUBID_BLOCK_SIZE=65536
-INITIAL_SUBID=100000
+# ==============================================================================
+# Script: Install Rootless Docker + Compose on Debian 13 (Trixie) - FIXED
+# ==============================================================================
 
-info()  { printf "\e[1;34m[INFO]\e[0m %s\n" "$*"; }
-warn()  { printf "\e[1;33m[WARN]\e[0m %s\n" "$*"; }
-error() { printf "\e[1;31m[ERROR]\e[0m %s\n" "$*"; exit 1; }
+# Bei Fehlern abbrechen
+set -e
 
-if [ "$(id -u)" -ne 0 ]; then
-  error "Dieses Skript muss als root ausgeführt werden."
+# Farben
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+echo -e "${GREEN}### Start: Rootless Docker Setup für Debian 13 (Fix Version) ###${NC}"
+
+if [ "$(id -u)" -eq 0 ]; then
+    echo -e "${RED}Fehler: Bitte als normaler User starten (nicht root).${NC}"
+    exit 1
 fi
 
-# 1) Install basic prerequisites (uidmap, slirp4netns, fuse-overlayfs, dbus-user-session, curl)
-install_prereqs() {
-  info "Ermittle Paketmanager..."
-  if command -v apt-get >/dev/null 2>&1; then
-    PKG_MANAGER="apt"
-    info "apt detected — updating and installing prerequisites..."
-    apt-get update -y
-    apt-get install -y --no-install-recommends ca-certificates curl uidmap dbus-user-session slirp4netns fuse-overlayfs
-  elif command -v dnf >/dev/null 2>&1; then
-    PKG_MANAGER="dnf"
-    info "dnf detected — installing prerequisites..."
-    dnf install -y shadow-utils uidmap dbus-user-session slirp4netns fuse-overlayfs curl
-  elif command -v pacman >/dev/null 2>&1; then
-    PKG_MANAGER="pacman"
-    info "pacman detected — installing prerequisites..."
-    pacman -Syu --noconfirm uidmap dbus-user-session slirp4netns fuse-overlayfs curl
-  else
-    warn "Kein bekannter Paketmanager gefunden (apt/dnf/pacman). Bitte installiere manuell: uidmap (newuidmap/newgidmap), slirp4netns, fuse-overlayfs, dbus-user-session, curl."
-  fi
-}
+USER_ID=$(id -u)
+USERNAME=$(whoami)
 
-# 2) Install Docker Engine (rootful) using get.docker.com (official easy installer)
-install_docker_engine() {
-  info "Installiere Docker Engine (offizielles Installationsskript)..."
-  curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-  sh /tmp/get-docker.sh
-  rm -f /tmp/get-docker.sh
-}
+# ------------------------------------------------------------------------------
+# 1. System & Dependencies
+# ------------------------------------------------------------------------------
+echo -e "${BLUE}--> [1/5] Systemkonfiguration (sudo)...${NC}"
+sudo apt-get update -qq
+sudo apt-get install -y -qq uidmap dbus-user-session fuse-overlayfs curl iptables slirp4netns
 
-# 3) Stop/disable system docker + remove socket (per Docker docs recommendation)
-disable_system_docker() {
-  info "Stoppe und deaktiviere systemweiten Docker (service + socket) und entferne den root socket..."
-  # try best effort; ignore failures
-  systemctl disable --now docker.service docker.socket || true
-  systemctl stop docker.service docker.socket || true
-  # Maskiere socket so dass systemd nicht mehr via socket-activation startet
-  systemctl mask docker.socket || true
-  systemctl mask docker.service || true
-  rm -f /var/run/docker.sock || true
-  info "System Docker sollte nun deaktiviert / der Socket entfernt sein."
-}
+# Kernel Module Fix
+if ! lsmod | grep -q nf_tables; then
+    echo "Lade nf_tables..."
+    sudo modprobe nf_tables
+fi
+echo "nf_tables" | sudo tee /etc/modules-load.d/rootless-docker.conf > /dev/null
 
-# 4) Create user without sudo
-create_user_no_sudo() {
-  if id "${USER_NAME}" >/dev/null 2>&1; then
-    info "User ${USER_NAME} existiert bereits — überspringe Erstellung."
-  else
-    info "Erstelle Benutzer ${USER_NAME} (kein sudo)..."
-    useradd -m -s /bin/bash "${USER_NAME}"
-    # Sperre Passwort (kein interaktives passwort)
-    passwd -l "${USER_NAME}" >/dev/null 2>&1 || true
-    info "Benutzer ${USER_NAME} erstellt (Passwort gesperrt)."
-  fi
-}
+# Sysctl Fixes
+sudo sh -c 'echo "net.ipv4.ip_unprivileged_port_start=80" > /etc/sysctl.d/50-unprivileged-ports.conf'
+sudo sh -c 'echo "net.ipv4.ping_group_range = 0 2147483647" > /etc/sysctl.d/50-docker-ping.conf'
+sudo sysctl --system > /dev/null
 
-# Utility: check overlap in /etc/subuid /etc/subgid
-range_overlaps() {
-  local start=$1 end=$2 file=$3
-  # file lines: name:start:count
-  while IFS=: read -r name s count; do
-    [ -z "$s" ] && continue
-    existing_start=$s
-    existing_end=$((existing_start + count - 1))
-    if ! (("$end" < "$existing_start" || "$start" > "$existing_end")); then
-      return 0  # overlaps
+# ------------------------------------------------------------------------------
+# 2. Docker Rootless Install
+# ------------------------------------------------------------------------------
+echo -e "${BLUE}--> [2/5] Docker Rootless Installation...${NC}"
+# Nur installieren, wenn noch nicht da (spart Zeit beim Rerun)
+if ! command -v docker >/dev/null 2>&1; then
+    curl -fsSL https://get.docker.com/rootless | sh
+else
+    echo "Docker scheint bereits installiert zu sein. Fahre fort..."
+fi
+
+# ------------------------------------------------------------------------------
+# 3. Docker Compose Plugin
+# ------------------------------------------------------------------------------
+echo -e "${BLUE}--> [3/5] Docker Compose Plugin...${NC}"
+mkdir -p ~/.docker/cli-plugins
+COMPOSE_URL="https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)"
+
+if [ ! -f ~/.docker/cli-plugins/docker-compose ]; then
+    curl -L $COMPOSE_URL -o ~/.docker/cli-plugins/docker-compose
+    chmod +x ~/.docker/cli-plugins/docker-compose
+else
+    echo "Docker Compose bereits vorhanden."
+fi
+
+# ------------------------------------------------------------------------------
+# 4. .bashrc Config (HIER WAR DER FEHLER)
+# ------------------------------------------------------------------------------
+echo -e "${BLUE}--> [4/5] Aktualisiere .bashrc...${NC}"
+
+BASHRC_FILE="$HOME/.bashrc"
+
+# Header
+if ! grep -q "# --- Docker Rootless Config ---" "$BASHRC_FILE"; then
+    echo "" >> "$BASHRC_FILE"
+    echo "# --- Docker Rootless Config ---" >> "$BASHRC_FILE"
+fi
+
+# Sichere Funktion zum Hinzufügen (verhindert Crash bei set -e)
+safe_append() {
+    local LINE="$1"
+    # grep gibt 1 zurück wenn nicht gefunden, das ! dreht es um,
+    # sodass der if-Block betreten wird. Das löst keinen set -e Abbruch aus.
+    if ! grep -qF "$LINE" "$BASHRC_FILE"; then
+        echo "$LINE" >> "$BASHRC_FILE"
+        echo "Hinzugefügt: $LINE"
+    else
+        echo "Bereits vorhanden: $LINE"
     fi
-  done < <(grep -E '^[^#]+' "$file" 2>/dev/null || true)
-  return 1  # no overlap
 }
 
-# 5) Ensure /etc/subuid and /etc/subgid contain a block for the user (65536)
-ensure_subid_ranges() {
-  for file in /etc/subuid /etc/subgid; do
-    if grep -q "^${USER_NAME}:" "$file" 2>/dev/null; then
-      info "${file} enthält bereits Eintrag für ${USER_NAME}."
-      continue
-    fi
+safe_append "export PATH=/home/$USERNAME/bin:\$PATH"
+safe_append "export DOCKER_HOST=unix:///run/user/$USER_ID/docker.sock"
+safe_append "alias docker-compose='docker compose'"
 
-    candidate=${INITIAL_SUBID}
-    while true; do
-      candidate_end=$((candidate + SUBID_BLOCK_SIZE - 1))
-      if range_overlaps "$candidate" "$candidate_end" "$file"; then
-        candidate=$((candidate + SUBID_BLOCK_SIZE))
-        # try next block
-        continue
-      else
-        # append
-        info "Füge ${USER_NAME}:${candidate}:${SUBID_BLOCK_SIZE} zu ${file} hinzu."
-        printf "%s:%d:%d\n" "${USER_NAME}" "${candidate}" "${SUBID_BLOCK_SIZE}" >> "$file"
-        break
-      fi
-    done
-  done
-}
+echo "Variablen erfolgreich geprüft/gesetzt."
 
-# 6) Install/enable rootless Docker for the user
-install_rootless_for_user() {
-  # if dockerd-rootless-setuptool.sh exists, prefer using it
-  if [ -x /usr/bin/dockerd-rootless-setuptool.sh ]; then
-    info "Found /usr/bin/dockerd-rootless-setuptool.sh — Verwende dieses Tool für die Installation (als ${USER_NAME})."
-    su - "${USER_NAME}" -c "mkdir -p \"\$HOME/bin\" && /usr/bin/dockerd-rootless-setuptool.sh install"
-  else
-    info "Kein dockerd-rootless-setuptool.sh gefunden — benutze das offizielle rootless Installationsskript (get.docker.com/rootless) als ${USER_NAME}."
-    # run the rootless script as the user (non-root)
-    su - "${USER_NAME}" -c "curl -fsSL https://get.docker.com/rootless | sh"
-  fi
+# ------------------------------------------------------------------------------
+# 5. Services Starten
+# ------------------------------------------------------------------------------
+echo -e "${BLUE}--> [5/5] Starte Dienste...${NC}"
 
-  info "Erlaube 'linger' damit der Benutzerdämon auch ohne interaktive Login-Sitzung laufen kann."
-  # enable linger so systemd --user services can run after reboot
-  loginctl enable-linger "${USER_NAME}" || warn "loginctl enable-linger schlug fehl (eventuell auf dieser Plattform nicht verfügbar)."
-}
+systemctl --user enable docker
+systemctl --user start docker
 
-# 7) Final info / environment hint
-print_final_instructions() {
-  uid=$(id -u "${USER_NAME}")
-  info "Fertig. Wichtige Hinweise für den Benutzer ${USER_NAME}:"
-  echo
-  cat <<EOF
-Als ${USER_NAME} evtl. nötig (oder in ~/.bashrc eintragen):
+if [ "$(loginctl show-user $USERNAME -p Linger | cut -d= -f2)" != "yes" ]; then
+    echo "Aktiviere Linger..."
+    sudo loginctl enable-linger $USERNAME
+fi
 
-  export PATH=\$HOME/bin:\$PATH
-  export DOCKER_HOST=unix:///run/user/${uid}/docker.sock
-
-Beispiel (als ${USER_NAME}):
-  su - ${USER_NAME} -c 'docker info'
-
-Wenn 'docker info' auf den rootless Daemon zugreift, sollte in der Ausgabe 'rootless' bei Security Options stehen.
-
-Quellen:
- - Docker Rootless Dokumentation (Prüfungen, Hinweise, wie man deaktivierten system Docker behandelt). 
- - Offizielles rootless Installationsskript: https://get.docker.com/rootless
-
-EOF
-}
-
-main() {
-  install_prereqs
-  install_docker_engine
-  disable_system_docker
-  create_user_no_sudo
-  ensure_subid_ranges
-  install_rootless_for_user
-  print_final_instructions
-}
-
-main "$@"
+echo -e "${GREEN}### Installation fertig! ###${NC}"
+echo -e "Bitte ausführen: ${GREEN}source ~/.bashrc${NC}"
