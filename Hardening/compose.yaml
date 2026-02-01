@@ -1,0 +1,61 @@
+services:
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    restart: unless-stopped
+
+    # Statische IP im ipvlan-Netz
+    networks:
+      ipvlan20:
+        ipv4_address: xx.xx.xx.xx
+      grafana:
+
+    # Sicherheitsmaßnahmen (CIS / BSI)
+    read_only: true
+    user: "1000:1000" #Mappt auf 101000:101000 mit user-remap an
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # Nur notwendige Volumes (read-only)
+    volumes:
+      - ./appdata/var:/var/lib/grafana
+#      - grafana-data:/var/lib/grafana:rw #Alternative, Docker Volume, einfacher für Permissions aber unpraktisch für Konfiguration
+
+    # Ram-Only Volumes, für Read-Only benötigt.
+    tmpfs:
+      - /tmp
+
+    environment:
+      - TZ=Europe/Berlin
+    
+    # Ressourcenbegrenzung
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+    # Logging begrenzen
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Healthcheck (BSI: Überwachung)
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  ipvlan20: # Für externe Kommunikation
+    external: true
+  grafana: #Für CtoC Kommunikation
+    internal: true
+
+#volumes:
+#  grafana-data:

@@ -1,0 +1,53 @@
+#Docker Daemon Konfiguration, user-remap, log, registry.
+/etc/docker/daemon.json
+{
+  "registry-mirrors": ["https://xx"],
+  "insecure-registries":,
+  "no-new-privileges": true,
+  "userns-remap": "default",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+
+---
+
+#IPVLAN mit Container to Container Kommunikation deaktiviert
+docker network create -d ipvlan   --subnet=xx.xx.xx.x/24   --gateway=xx.xx.xx.x   -o ipvlan_flag=private   -o ipvlan_mode=l2   -o parent=eth1   ipvlan
+#Für Container to Container Kommunikation wird ein zusätzliches Netzwerk dem Container zugeordnet mit der Option internal: true.
+
+---
+
+#Aktivieren von eth1, ohne IP-Adresse für Docker Container.
+/etc/netplan/90-eth1.yaml
+network:
+  version: 2
+  ethernets:
+    eth1:
+      match:
+        macaddress: "xx:xx:xx:xx:xx:xx"
+      dhcp4: false
+      dhcp6: false
+      set-name: "eth1"
+      optional: true
+
+--
+
+/etc/audit/rules.d/docker.rules
+# Überwachung des Docker Daemons
+-w /usr/bin/dockerd -k docker
+-w /usr/bin/containerd -k docker
+
+# Überwachung der Konfigurationsdateien (Erkennung von Manipulation)
+-w /etc/docker -p wa -k docker
+-w /etc/default/docker -p wa -k docker
+-w /etc/docker/daemon.json -p wa -k docker
+
+# Überwachung des Docker Sockets (Kritisch!)
+-w /run/containerd/containerd.sock -k docker
+-w /var/run/docker.sock -k docker
+
+# Überwachung von Container-Daten (Optional - hohes Volumen)
+-w /var/lib/docker -p wa -k docker
