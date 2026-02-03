@@ -3,7 +3,9 @@
 {
   "registry-mirrors": ["https://xx"],
   "insecure-registries":,
+  "icc": false,
   "no-new-privileges": true,
+  "live-restore": true,
   "userns-remap": "default",
   "log-driver": "json-file",
   "log-opts": {
