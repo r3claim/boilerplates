@@ -1,0 +1,49 @@
+services:
+  influxdb:
+    image: influxdb:2.8.0-alpine
+    container_name: influxdb
+    restart: unless-stopped
+
+    # Statische IP im ipvlan-Netz
+    networks:
+      ipvlan20:
+        ipv4_address: xx.xx.xx.xx # Hier die gewünschte IP eintragen
+
+    # Sicherheitsmaßnahmen (CIS / BSI)
+    read_only: true
+    user: "1000:1000" # WICHTIG: Host-Ordner müssen Eigentümer 101000:101000 haben
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # Volumes (Datenpersistenz und Konfiguration)
+    volumes:
+      - ./appdata/data:/var/lib/influxdb2 # Datenbank-Dateien
+      - ./appdata/config:/etc/influxdb2   # Konfigurationsdateien
+
+    # Ram-Only Volumes
+    # InfluxDB benötigt Schreibrechte für temporäre Dateien und Sockets
+    tmpfs:
+      - /tmp
+      - /run
+
+    environment:
+      - TZ=Europe/Berlin
+      # Optionale Init-Variablen für den ersten Start (Setup ohne GUI)
+#      - DOCKER_INFLUXDB_INIT_MODE=setup
+#      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+#      - DOCKER_INFLUXDB_INIT_PASSWORD=DeinSicheresPasswort123
+#      - DOCKER_INFLUXDB_INIT_ORG=meine-org
+#      - DOCKER_INFLUXDB_INIT_BUCKET=mein-bucket
+
+    # Healthcheck (InfluxDB Native)
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  ipvlan20: # Für externe Kommunikation
+    external: true
