@@ -1,0 +1,16 @@
+Schritt 1: Neu erstellen (mit deinen gewünschten Optionen)
+zfs create -V 16G \
+  -b 4096 \
+  -o compression=zle \
+  -o logbias=throughput \
+  -o sync=always \
+  -o primarycache=metadata \
+  rpool/swap
+
+Schritt 2: Wieder als Swap einrichten
+mkswap /dev/zvol/rpool/swap
+swapon /dev/zvol/rpool/swap
+
+Optional: dauerhaft aktivieren
+In /etc/fstab eintragen:
+/dev/zvol/rpool/swap none swap defaults 0 0
